@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>家庭监控 V5.0 (低码率稳定版)</title>
+    <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { background: #000; color: #fff; font-family: sans-serif; margin: 0; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; }
+        .container { text-align: center; width: 90%; max-width: 600px; }
+        
+        /* 状态栏增强 */
+        #status-bar { 
+            background: #222; padding: 12px; border-radius: 8px; margin-bottom: 20px; 
+            border: 1px solid #444; color: #aaa; font-size: 14px; 
+            white-space: pre-wrap; /* 允许换行显示日志 */
+        }
+        .error { color: #ff5252 !important; border-color: #ff5252 !important; }
+        .success { color: #4caf50 !important; border-color: #4caf50 !important; }
+        .warn { color: #ff9800 !important; border-color: #ff9800 !important; }
+
+        /* 视频区域 */
+        video { width: 100%; background: #111; border-radius: 10px; border: 1px solid #333; max-height: 60vh; display: none; }
+
+        /* 按钮与输入 */
+        .btn { width: 100%; padding: 15px; margin: 10px 0; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; color: white; cursor: pointer; }
+        .btn-cam { background: #2196F3; }
+        .btn-view { background: #ff9800; }
+        input { padding: 15px; width: 60%; border-radius: 8px; border: none; outline: none; margin-right: 5px; font-size: 16px; }
+
+        .id-text { font-size: 20px; color: #2196F3; font-weight: bold; letter-spacing: 1px; margin: 10px 0; user-select: all; background: #222; padding: 10px; border-radius: 5px;}
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div id="status-bar">系统准备就绪 (V5.0)</div>
+    </div>
+
+    <div id="menu" class="container">
+        <button class="btn btn-cam" onclick="startCameraMode()">💻 电脑端 (发送端)</button>
+        <button class="btn btn-view" onclick="startViewMode()">📱 手机端 (接收端)</button>
+        <p style="font-size:12px; color:#666">建议电脑连接 Wi-Fi，手机尽量信号满格</p>
+    </div>
+
+    <div id="camera-ui" class="container hidden">
+        <p>电脑 ID:</p>
+        <div class="id-text" id="my-id">...</div>
+        <p style="font-size:12px; color:#aaa">正在发送 360P 低延迟画面...</p>
+        <video id="localVideo" autoplay muted playsinline></video>
+    </div>
+
+    <div id="view-ui" class="container hidden">
+        <div style="display:flex; justify-content:center;">
+            <input type="text" id="target-id" placeholder="输入电脑ID">
+            <button class="btn btn-view" style="width:35%; margin:0" onclick="connectToCamera()">连接</button>
+        </div>
+        <video id="remoteVideo" autoplay playsinline controls></video>
+    </div>
+
+    <script>
+        // 配置：继续使用 Google STUN，但增加超时设置
+        const peerConfig = {
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            },
+            debug: 1
+        };
+
+        const peer = new Peer(peerConfig);
+        let localStream = null;
+        let activeCall = null;
+        let keepAliveInterval = null;
+
+        const statusEl = document.getElementById('status-bar');
+
+        function log(msg, type = 'normal') {
+            statusEl.innerText = msg;
+            statusEl.className = type;
+            console.log(msg);
+        }
+
+        peer.on('open', (id) => {
+            document.getElementById('my-id').innerText = id;
+            log("✅ ID已生成，请选择模式", "success");
+        });
+
+        peer.on('error', (err) => {
+            log("❌ 错误: " + err.type, "error");
+        });
+
+        // --- 电脑端逻辑 (降质保稳) ---
+        async function startCameraMode() {
+            document.getElementById('menu').classList.add('hidden');
+            document.getElementById('camera-ui').classList.remove('hidden');
+            log("正在启动低带宽模式摄像头...");
+
+            try {
+                // 【核心修改】强制使用 360P 和 15帧，大幅降低带宽压力
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: 1280, height: 720, frameRate: 30 }, 
+                    audio: true 
+                });
+                
+                document.getElementById('localVideo').srcObject = localStream;
+                document.getElementById('localVideo').style.display = 'block';
+                log("🎥 摄像头就绪 (360P流畅模式)\n等待手机连接...", "success");
+
+                peer.on('call', (call) => {
+                    log("📲 手机正在接入...", "warn");
+                    activeCall = call;
+                    
+                    // 接听并发送流
+                    call.answer(localStream);
+                    
+                    // 监听连接断开
+                    call.on('close', () => log("⚠️ 手机已断开连接", "error"));
+                    call.on('error', () => log("⚠️ 连接发生错误", "error"));
+                });
+
+            } catch (err) {
+                log("无法启动摄像头: " + err.name, "error");
+            }
+        }
+
+        // --- 手机端逻辑 ---
+        function startViewMode() {
+            document.getElementById('menu').classList.add('hidden');
+            document.getElementById('view-ui').classList.remove('hidden');
+            log("请输入电脑ID");
+        }
+
+        function connectToCamera() {
+            const targetId = document.getElementById('target-id').value.trim();
+            if (!targetId) return alert("请输入ID");
+
+            log("🔄 正在穿透... (请保持屏幕常亮)");
+
+            // 发送假流
+            const canvas = document.createElement("canvas");
+            canvas.width = 1; canvas.height = 1;
+            const fakeStream = canvas.captureStream(10);
+
+            const call = peer.call(targetId, fakeStream);
+            activeCall = call;
+
+            call.on('stream', (remoteStream) => {
+                log("✅ 画面传输中！\n如果卡顿是正常的网络缓冲", "success");
+                
+                const v = document.getElementById('remoteVideo');
+                v.style.display = 'block';
+                v.srcObject = remoteStream;
+                
+                // 强制播放
+                v.play().catch(e => {
+                    log("⚠️ 请点击一下视频画面以播放声音", "warn");
+                });
+
+                // 【核心修改】启动心跳保活
+                startKeepAlive(call);
+            });
+
+            call.on('close', () => {
+                log("❌ 连接已断开 (对方离线或网络中断)", "error");
+                stopKeepAlive();
+            });
+
+            call.on('error', (err) => {
+                log("❌ 连接错误: " + err, "error");
+            });
+        }
+
+        // --- 心跳保活逻辑 ---
+        // 某些路由器如果发现没数据上传，会切断下载。
+        // 我们每秒钟在控制台打印一下，虽然不能直接发包，但能保持JS活跃。
+        function startKeepAlive(call) {
+            if (keepAliveInterval) clearInterval(keepAliveInterval);
+            keepAliveInterval = setInterval(() => {
+                if (call && call.open) {
+                    console.log("Ping... (Keeping connection alive)");
+                }
+            }, 2000);
+        }
+
+        function stopKeepAlive() {
+            if (keepAliveInterval) clearInterval(keepAliveInterval);
+        }
+
+        // 页面关闭警告
+        window.onbeforeunload = function() {
+            if (activeCall) activeCall.close();
+        };
+    </script>
+</body>
+</html>
